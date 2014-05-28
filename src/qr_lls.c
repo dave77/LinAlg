@@ -7,7 +7,7 @@
  * Copyright David Wiltshire (c), 2014
  * All rights reserved
  *
- * Licence: BSD (3-Clause) see file LICENSE
+ * Licence: see file LICENSE
  */
 
 #include "qr_lls.h"

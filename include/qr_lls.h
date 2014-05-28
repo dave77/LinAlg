@@ -1,3 +1,11 @@
+/* Linear Least Squares Solver, using QR factorization
+ *
+ * Copyright David Wiltshire (c), 2014
+ * All rights reserved
+ *
+ * Licence: see file LICENSE
+ */
+
 #ifndef QR_LLS_H_
 #define QR_LLS_H_
 

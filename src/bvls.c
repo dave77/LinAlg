@@ -17,7 +17,7 @@
  * Copyright David Wiltshire (c), 2014
  * All rights reserved
  *
- * Licence: BSD (3-Clause) see file LICENSE
+ * Licence: see file LICENSE
  */
 
 // Local Includes
@@ -163,7 +163,7 @@ find_index_to_bind(int num_free, const int *indices, const double *restrict z,
 		int ii = indices[i];
 		x[ii] += alpha * (z[i] - x[ii]);
 	}
-	
+
 	if (bind_up) {
 		x[index] = ub[index];
 		istate[index] = 1;

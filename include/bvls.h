@@ -1,3 +1,11 @@
+/* Bounded Variable Least Sqaures Solver
+ *
+ * Copyright David Wiltshire (c), 2014
+ * All rights reserved
+ *
+ * Licence: see file LICENSE
+ */
+
 #ifndef BVLS_H_
 #define BVLS_H_
 
