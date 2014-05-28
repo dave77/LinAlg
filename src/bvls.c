@@ -44,7 +44,7 @@ negative_gradient(int m, int n, const double *restrict A, const double *restrict
 	// Initialize w
 	for (int j = 0; j < n; ++j)
 		w[j] = 0.0;
-	
+
 	for (int i = 0; i < m; ++i) {
 		double ri = b[i]; 
 		for (int j = 0; j < n; ++j)
@@ -78,7 +78,7 @@ free_index(int index, int *istate, int *indices, int *num_free)
 	assert(index >= 0);
 	istate[index] = 0;
 	indices[*num_free] = index;
-	(*num_free)++;
+	++(*num_free);
 }
 
 /* 
@@ -93,17 +93,17 @@ build_free_matrices(int m, int n, int num_free, const double *restrict A,
 {
 	/* Set A' to free columns of A */
 	for (int i = 0; i < num_free; ++i) {
-		memcpy(act_A, &*(A + m * indices[i]), m * sizeof(*act_A));
+		memcpy(act_A, (A + m * indices[i]), m * sizeof(*act_A));
 		act_A += m;
 	}
 
 	/* Set b' = b */
 	memcpy(act_b, b, m * sizeof(*act_b));
-	/* Adjust bj' = bj - sum{Aij} for i not in Free set */
+	/* Adjust b'j = bj - sum{Aij * x[j]} for i not in Free set */
 	for (int i = 0; i < m; ++i) {
 		for (int j = 0; j < n; ++j) {
 			if (istate[j] != 0) {
-				act_b[i] -= *(A + j *m + i) * x[i];
+				act_b[i] -= *(A + j * m + i) * x[j];
 			}
 		}
 	}
@@ -133,41 +133,46 @@ set_x_to_z(int num_free, const int *indices, const double *restrict z, double *r
 		x[indices[i]] = z[i];
 }
 
-static double
+static int 
 find_index_to_bind(int num_free, const int *indices, const double *restrict z,
-		   const double *restrict x, const double *restrict lb,
-		   const double *restrict ub)
+		   double *restrict x, const double *restrict lb,
+		   const double *restrict ub, int *istate)
 {
 	int index = -1;
+	bool bind_up = false;
 	double alpha = DBL_MAX;
-	
+
 	for (int i = 0; i < num_free; ++i) {
 		int ii = indices[i];
 		if (z[i] >= lb[ii] && z[i] <= ub[ii])
 			continue;
 
 		double up, down;
-		down = fabs((lb[ii] - x[ii]) / (z[i] - x[ii]));
-		up = fabs((ub[ii] - x[ii]) / (z[i] - x[ii]));
+		down = fabs((lb[ii] - z[i]) / (z[i] - x[ii]));
+		up = fabs((ub[ii] - z[i]) / (z[i] - x[ii]));
 		if (up < alpha || down < alpha) {
 			alpha = up < down ? up : down; 
-			index = i;
+			bind_up = up < down ? true : false;
+			index = ii;
 		}
 	}
 
 	assert(index >= 0);
-	
-	return alpha;
-}
 
-static void
-adjust_free_vars(int num_free, double alpha, const int *indices,
-		 const double *restrict z, double *restrict x)
-{
 	for (int i = 0; i < num_free; ++i) {
 		int ii = indices[i];
 		x[ii] += alpha * (z[i] - x[ii]);
 	}
+	
+	if (bind_up) {
+		x[index] = ub[index];
+		istate[index] = 1;
+	} else {
+		x[index] = lb[index];
+		istate[index] = -1;
+	}
+
+	return index;
 }
 
 /* Move variables that are out of bounds to their respective bound */
@@ -176,10 +181,10 @@ adjust_sets(int n, const double *lb, const double *ub, double *x, int *istate)
 {
 	int num_free = 0;
 	for (int i = 0; i < n; ++i) {
-		if (x[i] < lb[i]) {
+		if (x[i] <= lb[i]) {
 			istate[i] = -1;
 			x[i] = lb[i];
-		} else if (x[i] > ub[i]) {
+		} else if (x[i] >= ub[i]) {
 			istate[i] = 1;
 			x[i] = ub[i];
 		} else {
@@ -189,7 +194,6 @@ adjust_sets(int n, const double *lb, const double *ub, double *x, int *istate)
 	}
 	return num_free;
 }
-
 
 /* Allocate working arrays */
 static int
@@ -244,7 +248,6 @@ init(int n, const double *restrict lb, const double *restrict ub, double *restri
 	return 0;
 }
 
-
 /* The BVLS main function */
 int
 bvls(int m, int n, const double *restrict A, const double *restrict b,
@@ -280,19 +283,17 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 		if (index_to_free == prev) {
 			w[prev] = 0.0;
 			continue;
-		} else {
-			prev = index_to_free;
 		}
 		
 		/* Move index to free set */
 		free_index(index_to_free, istate, indices, &num_free);
-
 		/* Solve Problem for free set */
 		build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, act_b);
 		rc = qr_solve(m, num_free, act_A, act_b, z);
 		if (rc < 0) {
+			prev = index_to_free;
 			w[prev] = 0.0;
-			if (x[prev] < lb[prev] + FLT_EPSILON) {
+			if (x[prev] == lb[prev]) {
 				istate[prev] = -1;
 			} else {
 				istate[prev] = 1;
@@ -302,16 +303,28 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 		}
 
 		if (check_bounds(num_free, indices, z, lb, ub)) {
-			prev = -1;
 			set_x_to_z(num_free, indices, z, x);
+			prev = -1;
+			negative_gradient(m, n, A, b, x, w);
+			continue;
 		} else {
-			double alpha = find_index_to_bind(num_free, indices, z, x, lb, ub);
-			adjust_free_vars(num_free, alpha, indices, z, x);
+			prev = find_index_to_bind(num_free, indices, z, x, lb, ub, istate);
 			num_free = adjust_sets(n, lb, ub, x, istate);
 		}
-
-		if (num_free == n)
-			break;
+		while (num_free > 0) {
+			build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, act_b);
+			rc = qr_solve(m, num_free, act_A, act_b, z);
+			if (rc < 0) {
+				goto out;
+			}
+			if (check_bounds(num_free, indices, z, lb, ub)) {
+				set_x_to_z(num_free, indices, z, x);
+				break;
+			} else {
+				(void)find_index_to_bind(num_free, indices, z, x, lb, ub, istate);
+				num_free = adjust_sets(n, lb, ub, x, istate);
+			}
+		}
 		negative_gradient(m, n, A, b, x, w);
 	}
 out:
