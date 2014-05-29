@@ -197,19 +197,17 @@ adjust_sets(int n, const double *lb, const double *ub, double *x, int *istate)
 
 /* Allocate working arrays */
 static int
-allocate(int m, int n, double **w, double **act_A, double **act_b, double **z,
+allocate(int m, int n, double **w, double **act_A, double **z,
 		int **istate, int **indices)
 {
 	*w = malloc(n * sizeof(**w));
 	*act_A = malloc(m * n * sizeof(**act_A));
-	*act_b = malloc(m * sizeof(**act_b));
-	*z = malloc(n * sizeof(**z));
+	*z = malloc(m * sizeof(**z));
 	*istate = malloc(n * sizeof(**istate));
 	*indices = malloc(n * sizeof(**indices));
 
 	if (*w       == NULL ||
 	    *act_A   == NULL ||
-	    *act_b   == NULL ||
 	    *z       == NULL ||
 	    *istate  == NULL ||
 	    *indices == NULL)
@@ -220,11 +218,10 @@ allocate(int m, int n, double **w, double **act_A, double **act_b, double **z,
 
 /* Free memory */
 static void
-clean_up(double *w, double *act_A, double *act_b, double *z, int *istate, int *indices)
+clean_up(double *w, double *act_A, double *z, int *istate, int *indices)
 {
 	free(w);
 	free(act_A);
-	free(act_b);
 	free(z);
 	free(istate);
 	free(indices);
@@ -255,7 +252,6 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 {
 	double *w;
 	double *act_A;
-	double *act_b;
 	double *z;
 	int *istate;
 	int *indices;
@@ -263,7 +259,7 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 	int rc;
 	int prev = -1;
 
-	rc = allocate(m, n, &w, &act_A, &act_b, &z, &istate, &indices);
+	rc = allocate(m, n, &w, &act_A, &z, &istate, &indices);
 	if (rc < 0)
 		goto out;
 	rc = init(n, lb, ub, x, istate, indices);
@@ -288,8 +284,8 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 		/* Move index to free set */
 		free_index(index_to_free, istate, indices, &num_free);
 		/* Solve Problem for free set */
-		build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, act_b);
-		rc = qr_solve(m, num_free, act_A, act_b, z);
+		build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, z);
+		rc = qr_solve(m, num_free, act_A, z);
 		if (rc < 0) {
 			prev = index_to_free;
 			w[prev] = 0.0;
@@ -312,8 +308,8 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 			num_free = adjust_sets(n, lb, ub, x, istate);
 		}
 		while (num_free > 0) {
-			build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, act_b);
-			rc = qr_solve(m, num_free, act_A, act_b, z);
+			build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, z);
+			rc = qr_solve(m, num_free, act_A, z);
 			if (rc < 0) {
 				goto out;
 			}
@@ -328,6 +324,6 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 		negative_gradient(m, n, A, b, x, w);
 	}
 out:
-	clean_up(w, act_A, act_b, z, istate, indices);
+	clean_up(w, act_A, z, istate, indices);
 	return rc;
 }

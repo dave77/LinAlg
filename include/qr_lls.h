@@ -26,11 +26,10 @@
  * @param m	number of rows of A, b and x
  * @param n	number of columns of A
  * @param A	m x n matrix stored in column order (ie Aij isA [j][i])
- * @param b	n vector of data points
- * @param x	n vector of the solution.
+ * @param x	n vector contains b on input and the solution x on output
  *
  * @return	0 if successful, < 0 on error
  */
-int qr_solve(int m, int n, double *restrict A, double *restrict b, double *restrict x);
+int qr_solve(int m, int n, double *restrict A, double *restrict x);
 
 #endif

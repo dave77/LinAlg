@@ -29,12 +29,11 @@ norm(int n, const double *v)
 
 /* Solve a system of equations in upper triangular form */
 static int
-back_substitution(int m, int n, const double *restrict A, const double *restrict b,
-		  double *x)
+back_substitution(int m, int n, const double *restrict A, double *restrict x)
 {
 	int err = 0;
 	for (int i = n - 1; i >= 0; --i) {
-		double tmp = b[i];
+		double tmp = x[i];
 		for (int j = i + 1; j < n; ++j) {
 			tmp -= *(A + j * m + i) * x[j];
 		}
@@ -100,14 +99,14 @@ qr(int m, int n, double *restrict A, double *restrict b)
 
 /* QR solution of LLS problem */
 int
-qr_solve(int m, int n, double *restrict A, double *restrict b, double *restrict x)
+qr_solve(int m, int n, double *restrict A, double *restrict x)
 {
 	int err;
 	if (m < n)
 		return -EDOM;
-	if ((err = qr(m, n, A, b)) < 0)
+	if ((err = qr(m, n, A, x)) < 0)
 		return err;
-	if ((err = back_substitution(m, n, A, b, x)) < 0)
+	if ((err = back_substitution(m, n, A, x)) < 0)
 		return err;
 	return 0;
 }
