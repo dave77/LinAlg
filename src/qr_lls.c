@@ -18,7 +18,7 @@
 #include <math.h>
 
 /* Calculate the norm of a vector */
-static double 
+static double
 norm(int n, const double *v)
 {
 	double res = 0.0;
@@ -52,7 +52,7 @@ back_substitution(int m, int n, const double *restrict A, double *restrict x)
  * n vector.  The pivot is around Akk with the pivot being around the
  * column vector Ak + u0(e1) where e1 = (1 0 0 0 ... 0)
  */
-static void 
+static void
 householder_reflection(int m, int n, int k, double alpha, double u0, double *A, double *b)
 {
 	for (int j = k + 1; j < n; ++j) {
@@ -67,7 +67,7 @@ householder_reflection(int m, int n, int k, double alpha, double u0, double *A, 
 	}
 
 	double dot = u0 * b[k];
-	for (int i = k + 1; i < m; ++i) 
+	for (int i = k + 1; i < m; ++i)
 		dot += b[i] * *(A + k * m + i);
 	dot /= fabs(alpha * u0);
 
@@ -76,7 +76,7 @@ householder_reflection(int m, int n, int k, double alpha, double u0, double *A, 
 	b[k] -= dot * u0;
 }
 
-/* 
+/*
  * QR factorization: puts matrix A in upper triangular form (R) using QR
  * factorization and solves b = trans(Q) b simultaneously.
  */
@@ -84,14 +84,14 @@ static int
 qr(int m, int n, double *restrict A, double *restrict b)
 {
 	assert (m >= n);
-	
+
 	for (int i = 0; i < n; ++i) {
 		double col_norm = norm(m - i, (A + i * m + i));
 		if (col_norm < FLT_EPSILON) // columns of A are (almost) linearly dependent
 			return -1;
-		double alpha = -copysignl(col_norm, *(A + i * m + i));	
+		double alpha = -copysignl(col_norm, *(A + i * m + i));
 		double u0 = *(A + i * m + i) + alpha;
-		*(A + i * m + i) = -alpha;		
+		*(A + i * m + i) = -alpha;
 		householder_reflection(m, n, i, alpha, u0, A, b);
 	}
 	return 0;

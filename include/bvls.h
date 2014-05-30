@@ -34,10 +34,10 @@
  * @return 0 if successfuly, < 0 on error
  */
 int bvls(int m, int n,
-	 const double *restrict A, 
-	 const double *restrict b,
-	 const double *restrict lb,
-	 const double *restrict ub,
-	 double *restrict x);
+	 const double *A, 
+	 const double *b,
+	 const double *lb,
+	 const double *ub,
+	 double *x);
 
 #endif // BVLS_H_

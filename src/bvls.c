@@ -12,7 +12,7 @@
  *		b, x, lb, ub are n vectors
  *
  * Based on the article Stark and Parker "Bounded-Variable Least Squares: an Alogirthm
- * and Applications" retrieved from: http://www.stat.berkeley.edu/~stark/Preprints/bvls.pdf 
+ * and Applications" retrieved from: http://www.stat.berkeley.edu/~stark/Preprints/bvls.pdf
  *
  * Copyright David Wiltshire (c), 2014
  * All rights reserved
@@ -28,12 +28,13 @@
 #include <assert.h>
 #include <errno.h>
 #include <float.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* 
+/*
  * Computes w(*) = trans(A)(Ax -b), the negative gradient of the
  * residual.
  */
@@ -46,7 +47,7 @@ negative_gradient(int m, int n, const double *restrict A, const double *restrict
 		w[j] = 0.0;
 
 	for (int i = 0; i < m; ++i) {
-		double ri = b[i]; 
+		double ri = b[i];
 		for (int j = 0; j < n; ++j)
 			ri -= *(A + j * m + i) * x[j];
 		for (int j = 0; j < n; ++j)
@@ -56,7 +57,7 @@ negative_gradient(int m, int n, const double *restrict A, const double *restrict
 
 /* Find the index which most wants to be free.  Or return -1 */
 static int
-find_index_to_free(int n, const double *w, const int *istate)
+find_index_to_free(int n, const double *w, const int8_t *istate)
 {
 	int index = -1;
 	double max_grad = 0.0;
@@ -73,7 +74,7 @@ find_index_to_free(int n, const double *w, const int *istate)
 
 /* Move index to the free set */
 static void
-free_index(int index, int *istate, int *indices, int *num_free)
+free_index(int index, int8_t *istate, int *indices, int *num_free)
 {
 	assert(index >= 0);
 	istate[index] = 0;
@@ -81,14 +82,14 @@ free_index(int index, int *istate, int *indices, int *num_free)
 	++(*num_free);
 }
 
-/* 
+/*
  * Build matrix A' and b' where A' is those columns of A that are free
  * and b' is the vector less the contribution of the bound variables
  */
 static void
 build_free_matrices(int m, int n, int num_free, const double *restrict A,
 		    const double *restrict b, const int *restrict indices,
-		    const int *restrict istate, const double *restrict x,
+		    const int8_t *istate, const double *restrict x,
 		    double *restrict act_A, double *restrict act_b)
 {
 	/* Set A' to free columns of A */
@@ -122,7 +123,7 @@ check_bounds(int num_free, const int *indices, const double *restrict z,
 	return true;
 }
 
-/* 
+/*
  * Set the solution vector to suggested solution ... call only after
  * checking bounds!
  */
@@ -133,72 +134,76 @@ set_x_to_z(int num_free, const int *indices, const double *restrict z, double *r
 		x[indices[i]] = z[i];
 }
 
-static int 
-find_index_to_bind(int num_free, const int *indices, const double *restrict z,
+static void
+bind_index(int index, bool up, double fixed, double *x, int *num_free, int *indices,
+	   int8_t *istate)
+{
+	x[indices[index]] = fixed;
+	istate[indices[index]] = up ? 1 : -1;
+	memmove(indices + index, indices + index + 1, *num_free - index - 1);
+	--(*num_free);
+}
+
+static int
+find_index_to_bind(int *num_free, int *indices, const double *restrict z,
 		   double *restrict x, const double *restrict lb,
-		   const double *restrict ub, int *istate)
+		   const double *restrict ub, int8_t *istate)
 {
 	int index = -1;
 	bool bind_up = false;
 	double alpha = DBL_MAX;
 
-	for (int i = 0; i < num_free; ++i) {
+	for (int i = 0; i < *num_free; ++i) {
 		int ii = indices[i];
-		if (z[i] >= lb[ii] && z[i] <= ub[ii])
-			continue;
-
-		double up, down;
-		down = fabs((lb[ii] - z[i]) / (z[i] - x[ii]));
-		up = fabs((ub[ii] - z[i]) / (z[i] - x[ii]));
-		if (up < alpha || down < alpha) {
-			alpha = up < down ? up : down; 
-			bind_up = up < down ? true : false;
-			index = ii;
+		double interpolate;
+		if (z[i] <= lb[ii]) {
+			interpolate = (lb[ii] - x[ii]) / (z[i] - x[ii]);
+			if (interpolate < alpha) {
+				alpha = interpolate;
+				index = i;
+				bind_up = false;
+			}
+		} else if (z[i] >= ub[ii]) {
+			interpolate = (ub[ii] - x[ii]) / (z[i] - x[ii]);
+			if (interpolate < alpha) {
+				alpha = interpolate;
+				index = i;
+				bind_up = true;
+			}
 		}
 	}
 
 	assert(index >= 0);
 
-	for (int i = 0; i < num_free; ++i) {
+	for (int i = 0; i < *num_free; ++i) {
 		int ii = indices[i];
 		x[ii] += alpha * (z[i] - x[ii]);
 	}
 
-	if (bind_up) {
-		x[index] = ub[index];
-		istate[index] = 1;
-	} else {
-		x[index] = lb[index];
-		istate[index] = -1;
-	}
-
+	double limit = bind_up? ub[indices[index]] : lb[indices[index]];
+	bind_index(index, bind_up, limit, x, num_free, indices, istate);
 	return index;
 }
 
 /* Move variables that are out of bounds to their respective bound */
-static int 
-adjust_sets(int n, const double *lb, const double *ub, double *x, int *istate)
+static void
+adjust_sets(int *num_free, const double *lb, const double *ub, double *x,
+	    int *indices, int8_t *istate)
 {
-	int num_free = 0;
-	for (int i = 0; i < n; ++i) {
+	for (int ii = 0; ii < *num_free; ++ii) {
+		int i = indices[ii];
 		if (x[i] <= lb[i]) {
-			istate[i] = -1;
-			x[i] = lb[i];
+			bind_index(i, false, lb[i], x, num_free, indices, istate);
 		} else if (x[i] >= ub[i]) {
-			istate[i] = 1;
-			x[i] = ub[i];
-		} else {
-			istate[i] = 0;
-			++num_free;
+			bind_index(i, true, ub[i], x, num_free, indices, istate);
 		}
 	}
-	return num_free;
 }
 
 /* Allocate working arrays */
 static int
 allocate(int m, int n, double **w, double **act_A, double **z,
-		int **istate, int **indices)
+		int8_t **istate, int **indices)
 {
 	*w = malloc(n * sizeof(**w));
 	*act_A = malloc(m * n * sizeof(**act_A));
@@ -218,7 +223,7 @@ allocate(int m, int n, double **w, double **act_A, double **z,
 
 /* Free memory */
 static void
-clean_up(double *w, double *act_A, double *z, int *istate, int *indices)
+clean_up(double *w, double *act_A, double *z, int8_t *istate, int *indices)
 {
 	free(w);
 	free(act_A);
@@ -227,13 +232,13 @@ clean_up(double *w, double *act_A, double *z, int *istate, int *indices)
 	free(indices);
 }
 
-/* 
+/*
  * Initializes the problems: sets x[i] = lb[i] and sets istate and
  * indices correctly
  */
 static int
 init(int n, const double *restrict lb, const double *restrict ub, double *restrict x,
-		int *istate, int *indices)
+		int8_t *istate, int *indices)
 {
 	for (int i = 0; i < n; ++i) {
 		if (lb[i] > ub[i])
@@ -253,7 +258,7 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 	double *w;
 	double *act_A;
 	double *z;
-	int *istate;
+	int8_t *istate;
 	int *indices;
 	int num_free = 0;
 	int rc;
@@ -269,7 +274,7 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 	negative_gradient(m, n, A, b, x, w);
 	for (int i = 0; i < 3 * n; ++i) {
 		int index_to_free = find_index_to_free(n, w, istate);
-		/* 
+		/*
 		 * If no index on a bound wants to move in to the
 		 * feasible region then we are done
 		 */
@@ -280,7 +285,7 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 			w[prev] = 0.0;
 			continue;
 		}
-		
+
 		/* Move index to free set */
 		free_index(index_to_free, istate, indices, &num_free);
 		/* Solve Problem for free set */
@@ -301,24 +306,23 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 		if (check_bounds(num_free, indices, z, lb, ub)) {
 			set_x_to_z(num_free, indices, z, x);
 			prev = -1;
-			negative_gradient(m, n, A, b, x, w);
-			continue;
 		} else {
-			prev = find_index_to_bind(num_free, indices, z, x, lb, ub, istate);
-			num_free = adjust_sets(n, lb, ub, x, istate);
-		}
-		while (num_free > 0) {
-			build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, z);
-			rc = qr_solve(m, num_free, act_A, z);
-			if (rc < 0) {
-				goto out;
-			}
-			if (check_bounds(num_free, indices, z, lb, ub)) {
-				set_x_to_z(num_free, indices, z, x);
-				break;
-			} else {
-				(void)find_index_to_bind(num_free, indices, z, x, lb, ub, istate);
-				num_free = adjust_sets(n, lb, ub, x, istate);
+			prev = find_index_to_bind(&num_free, indices, z, x, lb, ub, istate);
+			adjust_sets(&num_free, lb, ub, x, indices, istate);
+			while (num_free > 0) {
+				build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, z);
+				rc = qr_solve(m, num_free, act_A, z);
+				// so something is very wrong, we must
+				// have solved these columns before so
+				// rc must be 0.
+				assert(rc == 0);
+				if (check_bounds(num_free, indices, z, lb, ub)) {
+					set_x_to_z(num_free, indices, z, x);
+					break;
+				} else {
+					prev = find_index_to_bind(&num_free, indices, z, x, lb, ub, istate);
+					adjust_sets(&num_free, lb, ub, x, indices, istate);
+				}
 			}
 		}
 		negative_gradient(m, n, A, b, x, w);
