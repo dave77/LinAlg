@@ -16,6 +16,7 @@ To build the project make a directory called build, change in to it and
 then run `cmake ..`. After this typing make will build the library.
 
 ```
+mkdir build
 cd build
 cmake ..
 make
@@ -27,6 +28,7 @@ the above commands passing -Dbvls_build_tests=ON.
 
 ```
 ln -s ${YOUR_GTEST_INSTALL_DIR} gtest
+mkdir build
 cd build
 cmake -Dbvls_build_tests=ON
 make
