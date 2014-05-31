@@ -22,10 +22,10 @@
 
 // Local Includes
 #include "bvls.h"
-#include "qr_lls.h"
 
 // Third Party Includes
 #include "cblas.h"
+#include "lapacke.h"
 
 // Standard Library Includes
 #include <assert.h>
@@ -38,6 +38,16 @@
 #include <string.h>
 
 /*
+ * Call LAPACK routine to solve min x |Ax-b|
+ */
+static int
+qr_solve(int m, int n, double *A, double *b)
+{
+	return LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', m, n, 1, A, m, b, m
+				> n ? m : n);
+}
+
+/*
  * Computes w(*) = trans(A)(Ax -b), the negative gradient of the
  * residual.
  */
@@ -46,7 +56,7 @@ negative_gradient(int m, int n, const double *restrict A, const double *restrict
 		  const double *restrict x, double *restrict r, double *restrict w)
 {
 	// r = b
-	memcpy(r, b, n * sizeof(*r));
+	memcpy(r, b, m * sizeof(*r));
 	// r = (-Ax + b) = (b - Ax)
 	cblas_dgemv(CblasColMajor, CblasNoTrans, m, n, -1.0, A, m,
 			x, 1, 1.0, r, 1);
@@ -279,6 +289,7 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 		 * If no index on a bound wants to move in to the
 		 * feasible region then we are done
 		 */
+		printf("Free index: %d\n", index_to_free);
 		if (index_to_free < 0)
 			break;
 
