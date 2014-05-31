@@ -24,6 +24,9 @@
 #include "bvls.h"
 #include "qr_lls.h"
 
+// Third Party Includes
+#include "cblas.h"
+
 // Standard Library Includes
 #include <assert.h>
 #include <errno.h>
@@ -40,19 +43,16 @@
  */
 static void
 negative_gradient(int m, int n, const double *restrict A, const double *restrict b,
-		  const double *restrict x, double *restrict w)
+		  const double *restrict x, double *restrict r, double *restrict w)
 {
-	// Initialize w
-	for (int j = 0; j < n; ++j)
-		w[j] = 0.0;
-
-	for (int i = 0; i < m; ++i) {
-		double ri = b[i];
-		for (int j = 0; j < n; ++j)
-			ri -= *(A + j * m + i) * x[j];
-		for (int j = 0; j < n; ++j)
-			w[j] += *(A + j * m + i) * ri;
-	}
+	// r = b
+	memcpy(r, b, n * sizeof(*r));
+	// r = (-Ax + b) = (b - Ax)
+	cblas_dgemv(CblasColMajor, CblasNoTrans, m, n, -1.0, A, m,
+			x, 1, 1.0, r, 1);
+	// w = trans(A)r + 0w = trans(A)r
+	cblas_dgemv(CblasColMajor, CblasTrans, m, n, 1.0, A, m,
+			r, 1, 0.0, w, 1);
 }
 
 /* Find the index which most wants to be free.  Or return -1 */
@@ -205,9 +205,10 @@ static int
 allocate(int m, int n, double **w, double **act_A, double **z,
 		int8_t **istate, int **indices)
 {
+	int mn = (m > n ? m : n);
 	*w = malloc(n * sizeof(**w));
 	*act_A = malloc(m * n * sizeof(**act_A));
-	*z = malloc(m * sizeof(**z));
+	*z = malloc(mn * sizeof(**z));
 	*istate = malloc(n * sizeof(**istate));
 	*indices = malloc(n * sizeof(**indices));
 
@@ -271,7 +272,7 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 	if (rc < 0)
 		goto out;
 
-	negative_gradient(m, n, A, b, x, w);
+	negative_gradient(m, n, A, b, x, z, w);
 	for (int i = 0; i < 3 * n; ++i) {
 		int index_to_free = find_index_to_free(n, w, istate);
 		/*
@@ -325,7 +326,7 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 				}
 			}
 		}
-		negative_gradient(m, n, A, b, x, w);
+		negative_gradient(m, n, A, b, x, z, w);
 	}
 out:
 	clean_up(w, act_A, z, istate, indices);
