@@ -274,6 +274,7 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 	int num_free = 0;
 	int rc;
 	int prev = -1;
+	int loops;
 
 	rc = allocate(m, n, &w, &act_A, &z, &istate, &indices);
 	if (rc < 0)
@@ -283,13 +284,12 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 		goto out;
 
 	negative_gradient(m, n, A, b, x, z, w);
-	for (int i = 0; i < 3 * n; ++i) {
+	for (loops = 3 *n; loops > 0; --loops) {
 		int index_to_free = find_index_to_free(n, w, istate);
 		/*
 		 * If no index on a bound wants to move in to the
 		 * feasible region then we are done
 		 */
-		printf("Free index: %d\n", index_to_free);
 		if (index_to_free < 0)
 			break;
 
@@ -339,6 +339,8 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 		}
 		negative_gradient(m, n, A, b, x, z, w);
 	}
+	if (loops == 0) // failed to converge
+		rc = -1;
 out:
 	clean_up(w, act_A, z, istate, indices);
 	return rc;
