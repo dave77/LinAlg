@@ -1,6 +1,9 @@
 # Build directory
 build/
 
+# gtest link
+gtest
+
 # Object files
 *.o
 *.ko
