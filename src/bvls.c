@@ -37,15 +37,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Call LAPACK routine to solve min x |Ax-b|
- */
-static int
-qr_solve(int m, int n, double *A, double *b)
-{
-	return LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', m, n, 1, A, m, b, m
-				> n ? m : n);
-}
 
 /*
  * Computes w(*) = trans(A)(Ax -b), the negative gradient of the
@@ -150,8 +141,9 @@ bind_index(int index, bool up, double fixed, double *x, int *num_free, int *indi
 {
 	x[indices[index]] = fixed;
 	istate[indices[index]] = up ? 1 : -1;
-	memmove(indices + index, indices + index + 1, *num_free - index - 1);
 	--(*num_free);
+	for (int i = index; i < *num_free; ++i)
+		indices[i] = indices[i + 1];
 }
 
 static int
@@ -200,12 +192,16 @@ static void
 adjust_sets(int *num_free, const double *lb, const double *ub, double *x,
 	    int *indices, int8_t *istate)
 {
+	// We must repeat each loop where we bind an index as we will
+	// have removed that entry from indices
 	for (int ii = 0; ii < *num_free; ++ii) {
 		int i = indices[ii];
 		if (x[i] <= lb[i]) {
-			bind_index(i, false, lb[i], x, num_free, indices, istate);
+			bind_index(ii, false, lb[i], x, num_free, indices, istate);
+			--ii;
 		} else if (x[i] >= ub[i]) {
-			bind_index(i, true, ub[i], x, num_free, indices, istate);
+			bind_index(ii, true, ub[i], x, num_free, indices, istate);
+			--ii;
 		}
 	}
 }
@@ -213,20 +209,16 @@ adjust_sets(int *num_free, const double *lb, const double *ub, double *x,
 /* Allocate working arrays */
 static int
 allocate(int m, int n, double **w, double **act_A, double **z,
-		int8_t **istate, int **indices)
+		double **s, int8_t **istate, int **indices)
 {
 	int mn = (m > n ? m : n);
-	*w = malloc(n * sizeof(**w));
-	*act_A = malloc(m * n * sizeof(**act_A));
-	*z = malloc(mn * sizeof(**z));
-	*istate = malloc(n * sizeof(**istate));
-	*indices = malloc(n * sizeof(**indices));
 
-	if (*w       == NULL ||
-	    *act_A   == NULL ||
-	    *z       == NULL ||
-	    *istate  == NULL ||
-	    *indices == NULL)
+	if ((*w	     = malloc(n * sizeof(**w))		) == NULL ||
+	    (*act_A   = malloc(m * n * sizeof(**act_A))	) == NULL ||
+	    (*z       = malloc(mn * sizeof(**z))        ) == NULL ||
+	    (*s	     = malloc(mn * sizeof(**s))		) == NULL ||
+	    (*istate  = malloc(n * sizeof(**istate))	) == NULL ||
+	    (*indices = malloc(n * sizeof(**indices))	) == NULL)
 		return -ENOMEM;
 	else
 		return 0;
@@ -234,11 +226,12 @@ allocate(int m, int n, double **w, double **act_A, double **z,
 
 /* Free memory */
 static void
-clean_up(double *w, double *act_A, double *z, int8_t *istate, int *indices)
+clean_up(double *w, double *act_A, double *z, double *s, int8_t *istate, int *indices)
 {
 	free(w);
 	free(act_A);
 	free(z);
+	free(s);
 	free(istate);
 	free(indices);
 }
@@ -255,8 +248,8 @@ init(int n, const double *restrict lb, const double *restrict ub, double *restri
 		if (lb[i] > ub[i])
 			return -1;
 		x[i] = lb[i];
-		indices[i] = -1;
-		istate[i] = -1;
+		indices[i] = i;
+		istate[i] = 0;
 	}
 	return 0;
 }
@@ -268,23 +261,76 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 {
 	double *w;
 	double *act_A;
+	double *s;
 	double *z;
 	int8_t *istate;
 	int *indices;
-	int num_free = 0;
+	int num_free = n;
 	int rc;
 	int prev = -1;
+	int rank;
 	int loops;
 
-	rc = allocate(m, n, &w, &act_A, &z, &istate, &indices);
+	rc = allocate(m, n, &w, &act_A, &z, &s, &istate, &indices);
 	if (rc < 0)
 		goto out;
 	rc = init(n, lb, ub, x, istate, indices);
 	if (rc < 0)
 		goto out;
 
+	memcpy(act_A, A, m * n * sizeof(*act_A));
+	memcpy(z, b, m * sizeof(*z));
+	for (int i = m; i < n; ++i)
+		z[i] = 0.0;
+	rc = LAPACKE_dgelss(LAPACK_COL_MAJOR, m, n, 1, act_A, m, z,
+			    m > n? m : n, s, FLT_MIN, &rank);
+	if (rc >= 0) {
+		set_x_to_z(num_free, indices, z, x);
+		if (check_bounds(num_free, indices, x, lb, ub)) {
+		 	goto out;
+		} else {
+			adjust_sets(&num_free, lb, ub, x, indices, istate);
+			build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, z);
+			rc = LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', m, num_free,
+					   1, act_A, m, z, m > n ? m : n);
+			if (rc < 0) {
+				rank = m < n ? m : n;
+				for (int i = 0; i < n; ++i) {
+					x[i] = lb[i];
+					istate[i] = -1;
+					indices[i] = -1;
+				}
+				num_free = 0;
+			}
+			while (num_free > 0) {
+				build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, z);
+				rc = LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', m, num_free,
+					           1, act_A, m, z, m > n ? m : n);
+				// so something is very wrong, we must
+				// have solved these columns before so
+				// rc must be 0.
+				assert(rc == 0);
+				if (check_bounds(num_free, indices, z, lb, ub)) {
+					set_x_to_z(num_free, indices, z, x);
+					break;
+				} else {
+					prev = find_index_to_bind(&num_free, indices, z, x, lb, ub, istate);
+					adjust_sets(&num_free, lb, ub, x, indices, istate);
+				}
+			}
+		}
+	} else {
+		rank = m < n ? m : n;
+		for (int i = 0; i < n; ++i) {
+			x[i] = lb[i];
+			istate[i] = -1;
+			indices[i] = -1;
+		}
+		num_free = 0;
+	}
+
 	negative_gradient(m, n, A, b, x, z, w);
-	for (loops = 3 *n; loops > 0; --loops) {
+	for (loops = 3 * n; loops > 0; --loops) {
 		int index_to_free = find_index_to_free(n, w, istate);
 		/*
 		 * If no index on a bound wants to move in to the
@@ -302,7 +348,7 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 		free_index(index_to_free, istate, indices, &num_free);
 		/* Solve Problem for free set */
 		build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, z);
-		rc = qr_solve(m, num_free, act_A, z);
+		rc = LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', m, num_free, 1, act_A, m, z, m > n ? m : n);
 		if (rc < 0) {
 			prev = index_to_free;
 			w[prev] = 0.0;
@@ -323,7 +369,8 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 			adjust_sets(&num_free, lb, ub, x, indices, istate);
 			while (num_free > 0) {
 				build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, z);
-				rc = qr_solve(m, num_free, act_A, z);
+				rc = LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', m, num_free, 1,
+				                   act_A, m, z, m > n ? m : n);
 				// so something is very wrong, we must
 				// have solved these columns before so
 				// rc must be 0.
@@ -337,11 +384,13 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 				}
 			}
 		}
+		if (num_free == rank)
+			break;
 		negative_gradient(m, n, A, b, x, z, w);
 	}
 	if (loops == 0) // failed to converge
 		rc = -1;
 out:
-	clean_up(w, act_A, z, istate, indices);
+	clean_up(w, act_A, z, s, istate, indices);
 	return rc;
 }
