@@ -11,8 +11,9 @@
  *		A is an m x n matrix
  *		b, x, lb, ub are n vectors
  *
- * Based on the article Stark and Parker "Bounded-Variable Least Squares: an Alogirthm
- * and Applications" retrieved from: http://www.stat.berkeley.edu/~stark/Preprints/bvls.pdf
+ * Based on the article Stark and Parker "Bounded-Variable Least Squares: an
+ * Alogirthm and Applications" retrieved from:
+ * http://www.stat.berkeley.edu/~stark/Preprints/bvls.pdf
  *
  * Copyright David Wiltshire (c), 2014
  * All rights reserved
@@ -37,31 +38,51 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Computes w(*) = trans(A)(Ax -b), the negative gradient of the
- * residual.
- */
+struct problem {
+	const double *A;
+	const double *b;
+	const double *lb;
+	const double *ub;
+	double *x;
+	const int m;
+	const int n;
+};
+
+struct work {
+	int *indices;
+	int *istate;
+	double *w;
+	double *s;
+	double *A;
+	double *z;
+	int num_free;
+	int prev;
+	int rank;
+};
+
+/* Computes w(*) = trans(A)(Ax -b), the negative gradient of the residual.*/
 static void
-negative_gradient(int m, int n, const double *restrict A, const double *restrict b,
-		  const double *restrict x, double *restrict r, double *restrict w)
+negative_gradient(struct problem *prob, struct work *work, double *x)
 {
-	// r = b
-	memcpy(r, b, m * sizeof(*r));
-	// r = (-Ax + b) = (b - Ax)
-	cblas_dgemv(CblasColMajor, CblasNoTrans, m, n, -1.0, A, m, x, 1, 1.0, r, 1);
-	// w = trans(A)r + 0w = trans(A)r
-	cblas_dgemv(CblasColMajor, CblasTrans, m, n, 1.0, A, m, r, 1, 0.0, w, 1);
+	int m = prob->m;
+	int n = prob->n;
+	// z = b
+	memcpy(work->z, prob->b, m * sizeof(*work->z));
+	// z = (-Ax + b) = (b - Ax)
+	cblas_dgemv(CblasColMajor, CblasNoTrans, m, n, -1.0, prob->A, m, x, 1, 1.0, work->z, 1);
+	// w = trans(A)z + 0w = trans(A)r
+	cblas_dgemv(CblasColMajor, CblasTrans, m, n, 1.0, prob->A, m, work->z, 1, 0.0, work->w, 1);
 }
 
 /* Find the index which most wants to be free.  Or return -1 */
 static int
-find_index_to_free(int n, const double *w, const int8_t *istate)
+find_index_to_free(int n, struct work *work)
 {
 	int index = -1;
 	double max_grad = 0.0;
 
-	for (int i = 0; i< n; ++i) {
-		double gradient = -w[i] * istate[i];
+	for (int i = 0; i < n; ++i) {
+		double gradient = -work->w[i] * work->istate[i];
 		if (gradient > max_grad) {
 			max_grad = gradient;
 			index = i;
@@ -72,12 +93,12 @@ find_index_to_free(int n, const double *w, const int8_t *istate)
 
 /* Move index to the free set */
 static void
-free_index(int index, int8_t *istate, int *indices, int *num_free)
+free_index(int index, struct work *work)
 {
 	assert(index >= 0);
-	istate[index] = 0;
-	indices[*num_free] = index;
-	++(*num_free);
+	work->istate[index] = 0;
+	work->indices[work->num_free] = index;
+	++(work->num_free);
 }
 
 /*
@@ -85,72 +106,69 @@ free_index(int index, int8_t *istate, int *indices, int *num_free)
  * and b' is the vector less the contribution of the bound variables
  */
 static void
-build_free_matrices(int m, int n, int num_free, const double *restrict A,
-		    const double *restrict b, const int *restrict indices,
-		    const int8_t *istate, const double *restrict x,
-		    double *restrict act_A, double *restrict act_b)
+build_free_matrices(struct problem *prob, struct work *work, double *x)
 {
+	int m = prob->m;
+	int n = prob->n;
+
 	/* Set A' to free columns of A */
-	for (int i = 0; i < num_free; ++i) {
-		memcpy(act_A, (A + m * indices[i]), m * sizeof(*act_A));
-		act_A += m;
+	for (int i = 0; i < work->num_free; ++i) {
+		int ii = work->indices[i];
+		memcpy((work->A + i * m), (prob->A + m * ii), m * sizeof(*work->A));
 	}
 
 	/* Set b' = b */
-	memcpy(act_b, b, m * sizeof(*act_b));
+	memcpy(work->z, prob->b, m * sizeof(*work->z));
 	/* Adjust b'j = bj - sum{Aij * x[j]} for i not in Free set */
 	for (int i = 0; i < m; ++i)  {
 		for (int j = 0; j < n; ++j) { 
-			if (istate[j] != 0) 
-				act_b[i] -= *(A + j * m + i) * x[j];
+			if (work->istate[j] != 0)
+				work->z[i] -= *(prob->A + j * m + i) * x[j];
 		}
 	}
 }
 
 /* Check that suggested solution is with in bounds */
 static bool
-check_bounds(int num_free, const int *indices, const double *restrict z,
-	     const double *restrict lb, const double *restrict ub)
+check_bounds(struct problem *prob, struct work *work)
 {
-	for (int i = 0; i < num_free; ++i) {
-		if (z[i] < lb[indices[i]] || z[i] > ub[indices[i]])
+	for (int i = 0; i < work->num_free; ++i) {
+		int ii = work->indices[i];
+		if (work->z[i] < prob->lb[ii] || work->z[i] > prob->ub[ii])
 			return false;
 	}
 	return true;
 }
 
 static void
-bind_index(int index, bool up, double fixed, double *x, int *num_free, int *indices,
-	   int8_t *istate)
+bind_index(int index, bool up, double fixed, struct work *work, double *x)
 {
-	x[indices[index]] = fixed;
-	istate[indices[index]] = up ? 1 : -1;
-	--(*num_free);
-	for (int i = index; i < *num_free; ++i)
-		indices[i] = indices[i + 1];
+	x[work->indices[index]] = fixed;
+	work->istate[work->indices[index]] = up ? 1 : -1;
+	--(work->num_free);
+	for (int i = index; i < work->num_free; ++i)
+		work->indices[i] = work->indices[i + 1];
 }
 
 static int
-find_index_to_bind(int *num_free, int *indices, const double *restrict z,
-		   double *restrict x, const double *restrict lb,
-		   const double *restrict ub, int8_t *istate)
+find_index_to_bind(struct problem *prob, struct work *work, double *x)
 {
 	int index = -1;
 	bool bind_up = false;
 	double alpha = DBL_MAX;
 
-	for (int i = 0; i < *num_free; ++i) {
-		int ii = indices[i];
+	for (int i = 0; i < work->num_free; ++i) {
+		int ii = work->indices[i];
 		double interpolate;
-		if (z[i] <= lb[ii]) {
-			interpolate = (lb[ii] - x[ii]) / (z[i] - x[ii]);
+		if (work->z[i] <= prob->lb[ii]) {
+			interpolate = (prob->lb[ii] - x[ii]) / (work->z[i] - x[ii]);
 			if (interpolate < alpha) {
 				alpha = interpolate;
 				index = i;
 				bind_up = false;
 			}
-		} else if (z[i] >= ub[ii]) {
-			interpolate = (ub[ii] - x[ii]) / (z[i] - x[ii]);
+		} else if (work->z[i] >= prob->ub[ii]) {
+			interpolate = (prob->ub[ii] - x[ii]) / (work->z[i] - x[ii]);
 			if (interpolate < alpha) {
 				alpha = interpolate;
 				index = i;
@@ -161,31 +179,29 @@ find_index_to_bind(int *num_free, int *indices, const double *restrict z,
 
 	assert(index >= 0);
 
-	for (int i = 0; i < *num_free; ++i) {
-		int ii = indices[i];
-		x[ii] += alpha * (z[i] - x[ii]);
+	for (int i = 0; i < work->num_free; ++i) {
+		int ii = work->indices[i];
+		x[ii] += alpha * (work->z[i] - x[ii]);
 	}
 
-	double limit = bind_up? ub[indices[index]] : lb[indices[index]];
-	bind_index(index, bind_up, limit, x, num_free, indices, istate);
+	int ii = work->indices[index];
+	double limit = bind_up? prob->ub[ii] : prob->lb[ii];
+	bind_index(index, bind_up, limit, work, x);
 	return index;
 }
 
 /* Move variables that are out of bounds to their respective bound */
 static void
-adjust_sets(int *num_free, const double *lb, const double *ub, double *x,
-	    int *indices, int8_t *istate)
+adjust_sets(struct problem *prob, struct work *work, double *x)
 {
 	// We must repeat each loop where we bind an index as we will
 	// have removed that entry from indices
-	for (int ii = 0; ii < *num_free; ++ii) {
-		int i = indices[ii];
-		if (x[i] <= lb[i]) {
-			bind_index(ii, false, lb[i], x, num_free, indices, istate);
-			--ii;
-		} else if (x[i] >= ub[i]) {
-			bind_index(ii, true, ub[i], x, num_free, indices, istate);
-			--ii;
+	for (int i = 0; i < work->num_free; ++i) {
+		int ii = work->indices[i];
+		if (x[ii] <= prob->lb[ii]) {
+			bind_index(i--, false, prob->lb[ii], work, x);
+		} else if (x[i] >= prob->ub[i]) {
+			bind_index(i--, true, prob->ub[ii], work, x);
 		}
 	}
 }
@@ -195,50 +211,94 @@ adjust_sets(int *num_free, const double *lb, const double *ub, double *x,
  * Returns the index bound
  */
 static int
-check_result(int *num_free, int *prev, int *indices, int8_t *istate, const double *lb,
-	     const double *ub, double *z, double *x)
+check_result(struct problem *prob, struct work *work, double *x)
 {
 	int err = 0;
-	if (check_bounds(*num_free, indices, z, lb, ub)) {
-		for (int i = 0; i < *num_free; ++i)
-			x[indices[i]] = z[i];
+	if (check_bounds(prob, work)) {
+		for (int i = 0; i < work->num_free; ++i)
+			x[work->indices[i]] = work->z[i];
 	} else {
-		*prev = find_index_to_bind(num_free, indices, z, x, lb, ub, istate);
-		adjust_sets(num_free, lb, ub, x, indices, istate);
+		work->prev = find_index_to_bind(prob, work, x);
+		adjust_sets(prob, work, x);
 		err = -1;
 	}
 	return err;
 }
 
 static void 
-find_valid_result(int m, int n, int *num_free, int *prev, int *indices,
-		  int8_t *istate, const double *A, const double *b,
-		  const double *lb, const double *ub, double *restrict act_A,
-		  double *restrict z, double *restrict x)
+find_valid_result(struct problem *prob, struct work *work, double *x)
 {
-	while (*num_free > 0) {
-		build_free_matrices(m, n, *num_free, A, b, indices, istate, x, act_A, z);
-		int rc = LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', m, *num_free,
-				1, act_A, m, z, m > n ? m : n);
+	int m = prob->m;
+	int n = prob->n;
+	int mn = m > n ? m : n;
+
+	while (work->num_free > 0) {
+		build_free_matrices(prob, work, x);
+		int rc = LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', m, work->num_free,
+				1, work->A, m, work->z, mn);
 		assert(rc == 0);
-		if (check_result(num_free, prev, indices, istate, lb, ub, z, x) == 0)
+		if (check_result(prob, work, x) == 0)
 			break;
+	}
+}
+
+static void
+set_to_lower_bound(struct problem *prob, struct work *work, double *x)
+{
+	int m = prob->m;
+	int n = prob->n;
+	work->rank = m < n ? m : n;
+	for (int i = 0; i < n; ++i) {
+		x[i] = prob->lb[i];
+		work->istate[i] = -1;
+		work->indices[i] = -1;
+	}
+	work->num_free = 0;
+}
+
+static int
+solve_unconstrained(struct problem *prob, struct work *work, double *x)
+{
+	int m = prob->m;
+	int n = prob->n;
+	int rc;
+
+	memcpy(work->A, prob->A, m * n * sizeof(*work->A));
+	memcpy(work->z, prob->b, m * sizeof(*work->z));
+	for (int i = m; i < n; ++i)
+		work->z[i] = 0.0;
+	rc = LAPACKE_dgelss(LAPACK_COL_MAJOR, m, n, 1, work->A, m, work->z,
+			    m > n ? m : n, work->s, FLT_MIN, &work->rank);
+	if (rc < 0) {
+		set_to_lower_bound(prob, work, x);
+		return -1;
+	}
+
+	for (int i = 0; i < work->num_free; ++i)
+		x[work->indices[i]] = work->z[i];
+
+	if (check_bounds(prob, work)) {
+		rc = 0;
+		return 0;
+	} else {
+		adjust_sets(prob, work, x);
+		find_valid_result(prob, work, x);
+		return -1;
 	}
 }
 
 /* Allocate working arrays */
 static int
-allocate(int m, int n, double **w, double **act_A, double **z,
-		double **s, int8_t **istate, int **indices)
+allocate(int m, int n, struct work *work)
 {
 	int mn = (m > n ? m : n);
 
-	if ((*w	      = malloc(n * sizeof(**w))		) == NULL ||
-	    (*act_A   = malloc(m * n * sizeof(**act_A))	) == NULL ||
-	    (*z       = malloc(mn * sizeof(**z))        ) == NULL ||
-	    (*s	      = malloc(mn * sizeof(**s))	) == NULL ||
-	    (*istate  = malloc(n * sizeof(**istate))	) == NULL ||
-	    (*indices = malloc(n * sizeof(**indices))	) == NULL)
+	if ((work->w	   = malloc(n * sizeof(*work->w))	) == NULL ||
+	    (work->A	   = malloc(m * n * sizeof(*work->A))	) == NULL ||
+	    (work->z	   = malloc(mn * sizeof(*work->z))	) == NULL ||
+	    (work->s	   = malloc(mn * sizeof(*work->s))	) == NULL ||
+	    (work->istate  = malloc(n * sizeof(*work->istate))	) == NULL ||
+	    (work->indices = malloc(n * sizeof(*work->indices))	) == NULL)
 		return -ENOMEM;
 	else
 		return 0;
@@ -246,14 +306,14 @@ allocate(int m, int n, double **w, double **act_A, double **z,
 
 /* Free memory */
 static void
-clean_up(double *w, double *act_A, double *z, double *s, int8_t *istate, int *indices)
+clean_up(struct work *work)
 {
-	free(w);
-	free(act_A);
-	free(z);
-	free(s);
-	free(istate);
-	free(indices);
+	free(work->w);
+	free(work->A);
+	free(work->z);
+	free(work->s);
+	free(work->istate);
+	free(work->indices);
 }
 
 /*
@@ -261,29 +321,17 @@ clean_up(double *w, double *act_A, double *z, double *s, int8_t *istate, int *in
  * indices correctly
  */
 static int
-init(int n, const double *restrict lb, const double *restrict ub, 
-		int8_t *istate, int *indices)
+init(struct problem *prob, struct work *work)
 {
+	int n = prob->n;
+
 	for (int i = 0; i < n; ++i) {
-		if (lb[i] > ub[i])
+		if (prob->lb[i] > prob->ub[i])
 			return -1;
-		indices[i] = i;
-		istate[i] = 0;
+		work->indices[i] = i;
+		work->istate[i] = 0;
 	}
 	return 0;
-}
-
-static void
-set_to_lower_bound(int m, int n, int *num_free, int *rank, int8_t *istate,
-	           int *indices, const double *lb, double *x)
-{
-	*rank = m < n ? m : n;
-	for (int i = 0; i < n; ++i) {
-		x[i] = lb[i];
-		istate[i] = -1;
-		indices[i] = -1;
-	}
-	*num_free = 0;
 }
 
 /* The BVLS main function */
@@ -291,51 +339,26 @@ int
 bvls(int m, int n, const double *restrict A, const double *restrict b,
 	const double *restrict lb, const double *restrict ub, double *restrict x)
 {
-	double *w;
-	double *act_A;
-	double *s;
-	double *z;
-	int8_t *istate;
-	int *indices;
-	int num_free = n;
+	struct work work;
+	struct problem prob = {.m = m, .n = n, .A = A, .b = b, .lb = lb, .ub = ub};
 	int rc;
-	int prev = -1;
-	int rank;
-	int loops;
+	int loops = 3 * n;
 
-	rc = allocate(m, n, &w, &act_A, &z, &s, &istate, &indices);
+	work.prev = -1;
+	work.num_free = n;
+	rc = allocate(m, n, &work);
 	if (rc < 0)
 		goto out;
-	rc = init(n, lb, ub, istate, indices);
+	rc = init(&prob, &work);
 	if (rc < 0)
 		goto out;
 
-	memcpy(act_A, A, m * n * sizeof(*act_A));
-	memcpy(z, b, m * sizeof(*z));
-	for (int i = m; i < n; ++i)
-		z[i] = 0.0;
-	rc = LAPACKE_dgelss(LAPACK_COL_MAJOR, m, n, 1, act_A, m, z, m > n? m : n, s, FLT_MIN, &rank);
-	if (rc >= 0) {
-		for (int i = 0; i < num_free; ++i)
-			x[indices[i]] = z[i];
+	if (solve_unconstrained(&prob, &work, x) == 0)
+		goto out;
 
-		if (check_bounds(num_free, indices, x, lb, ub)) {
-			// SVD found a valid solution!
-			rc = 0;
-		 	goto out;
-		} else {
-			adjust_sets(&num_free, lb, ub, x, indices, istate);
-			find_valid_result(m, n, &num_free, &prev,
-					  indices, istate, A, b, lb, ub,
-					  act_A, z, x);
-		}
-	} else {
-		set_to_lower_bound(m, n, &num_free, &rank, istate, indices, lb, x);
-	}
-
-	negative_gradient(m, n, A, b, x, z, w);
+	negative_gradient(&prob, &work, x);
 	for (loops = 3 * n; loops > 0; --loops) {
-		int index_to_free = find_index_to_free(n, w, istate);
+		int index_to_free = find_index_to_free(n, &work);
 		/*
 		 * If no index on a bound wants to move in to the
 		 * feasible region then we are done
@@ -343,41 +366,41 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 		if (index_to_free < 0)
 			break;
 
-		if (index_to_free == prev) {
-			w[prev] = 0.0;
+		if (index_to_free == work.prev) {
+			work.w[work.prev] = 0.0;
 			continue;
 		}
 
 		/* Move index to free set */
-		free_index(index_to_free, istate, indices, &num_free);
+		free_index(index_to_free, &work);
 		/* Solve Problem for free set */
-		build_free_matrices(m, n, num_free, A, b, indices, istate, x, act_A, z);
-		rc = LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', m, num_free, 1, act_A, m, z, m > n ? m : n);
+		build_free_matrices(&prob, &work, x);
+		rc = LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', m, work.num_free, 1,
+				    work.A, m, work.z, m > n ? m : n);
 		if (rc < 0) {
-			prev = index_to_free;
-			w[prev] = 0.0;
-			if (x[prev] == lb[prev]) {
-				istate[prev] = -1;
+			work.prev = index_to_free;
+			work.w[work.prev] = 0.0;
+			if (x[work.prev] == prob.lb[work.prev]) {
+				work.istate[work.prev] = -1;
 			} else {
-				istate[prev] = 1;
+				work.istate[work.prev] = 1;
 			}
-			--num_free;
+			--work.num_free;
 			continue;
 		}
 
-		if (check_result(&num_free, &prev, indices, istate, lb, ub, z, x) == 0) {
-			prev = -1;
+		if (check_result(&prob, &work, x) == 0) {
+			work.prev = -1;
 		} else {
-			find_valid_result(m, n, &num_free, &prev,
-					  indices, istate, A, b, lb, ub, act_A, z, x);
+			find_valid_result(&prob, &work, x);
 		}
-		if (num_free == rank)
+		if (work.num_free == work.rank)
 			break;
-		negative_gradient(m, n, A, b, x, z, w);
+		negative_gradient(&prob, &work, x);
 	}
 	if (loops == 0) // failed to converge
 		rc = -1;
 out:
-	clean_up(w, act_A, z, s, istate, indices);
+	clean_up(&work);
 	return rc;
 }
