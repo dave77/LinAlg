@@ -149,6 +149,32 @@ TEST(bvls, qr_test4)
 	}
  
 }
+
+/*
+ * This test is our own: We pass a linearly dependent system (i.e. rank
+ * deficient) and expect that the min norm solution is passed back
+ * rather than any other valid solution.
+ */
+TEST(bvls, min_norm)
+{
+	static const int N = 2;
+	static const int M = 2;
+	double A[N][M] = {{1, 1}, {1, 1}};
+	double b[M] = {3.0, 5.0};
+	double x[N];
+	double lb[N] = {0, 0};
+	double ub[N] = {10, 10};
+	double expected_x[N] = {2.0, 2.0};
+	int rc;
+	rc = bvls(M, N, (double *)A, b, lb, ub, x);
+
+	EXPECT_EQ(0, rc);
+	for (int i = 0; i < N; ++i) {
+		EXPECT_NEAR(expected_x[i], x[i], 0.00001);
+	}
+
+}
+
 #if 0
 
  M =    5,   N =   10,   UNBND =      0.10000E+07
