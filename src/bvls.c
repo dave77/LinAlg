@@ -139,6 +139,7 @@ check_bounds(struct problem *prob, struct work *work)
 	return true;
 }
 
+/* Set variable to upper/lower bound */
 static void
 bind_index(int index, bool up, double fixed, struct work *work, double *x)
 {
@@ -149,6 +150,10 @@ bind_index(int index, bool up, double fixed, struct work *work, double *x)
 		work->indices[i] = work->indices[i + 1];
 }
 
+/* 
+ * Find a variable to bind to a limit, and interpolate the solution:
+ *	xj = xj + alpha(zj' - xj)
+ */
 static int
 find_index_to_bind(struct problem *prob, struct work *work, double *x)
 {
@@ -224,6 +229,10 @@ check_result(struct problem *prob, struct work *work, double *x)
 	return err;
 }
 
+/* Loop B in Lawson and Hanson.  Continually loop solving the problem and
+ * binding at least one variable each step till we find a valid solution or
+ * until every variable is bound.
+ */
 static void 
 find_valid_result(struct problem *prob, struct work *work, double *x)
 {
@@ -241,6 +250,7 @@ find_valid_result(struct problem *prob, struct work *work, double *x)
 	}
 }
 
+/* Set all variables to be bound to the lower bound */
 static void
 set_to_lower_bound(struct problem *prob, struct work *work, double *x)
 {
@@ -255,6 +265,10 @@ set_to_lower_bound(struct problem *prob, struct work *work, double *x)
 	work->num_free = 0;
 }
 
+/* Use SVD to solve the problem unconstrained.  If that fails to find a
+ * solution within bounds then attempt to find a valid starting solution
+ * with some variables free
+ */
 static int
 solve_unconstrained(struct problem *prob, struct work *work, double *x)
 {
