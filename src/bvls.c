@@ -43,7 +43,6 @@ struct problem {
 	const double *b;
 	const double *lb;
 	const double *ub;
-	double *x;
 	const int m;
 	const int n;
 };
@@ -317,14 +316,17 @@ clean_up(struct work *work)
 }
 
 /*
- * Initializes the problems: sets x[i] = lb[i] and sets istate and
- * indices correctly
+ * Initializes the problems:
+ *	- check that lb and ub are valid
+ *	- add every element to the free set
  */
 static int
 init(struct problem *prob, struct work *work)
 {
 	int n = prob->n;
 
+	work->prev = -1;
+	work->num_free = n;
 	for (int i = 0; i < n; ++i) {
 		if (prob->lb[i] > prob->ub[i])
 			return -1;
@@ -344,8 +346,6 @@ bvls(int m, int n, const double *restrict A, const double *restrict b,
 	int rc;
 	int loops = 3 * n;
 
-	work.prev = -1;
-	work.num_free = n;
 	rc = allocate(m, n, &work);
 	if (rc < 0)
 		goto out;
