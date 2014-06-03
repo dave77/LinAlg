@@ -12,6 +12,8 @@ file(GLOB bvls_SOURCES src/*.c)
 
 include_directories(include)
 add_library(bvls STATIC ${bvls_SOURCES})
+add_library(bvls_shared SHARED ${bvls_SOURCES})
+set_target_properties(bvls_shared PROPERTIES COMPILE_FLAGS "-fPIC")
 
 if (bvls_build_tests)
 	enable_testing()
