@@ -214,29 +214,4 @@ TEST(bvls, min_norm)
      0.00000     -0.399400      -1.00000     -0.300000       21.0000    
     -3.00000       46.0000       100.000      -196.029      -1.00000   
 
-
-
-int problem2(void)
-{
-	double A[N][M] = 
-	     {{1, 1, 1, 1, 1},
-	     {1, 2, 3, 4, 5},
-	     {1, 4, 9, 16, 25}};
- 
-	double b[M] = {1, 2.3, 4.6, 3.1, 1.2};
-	double x[N];
-	double lb[N] = {-10, -10, -10};
-	double ub[N] = {10, 10, 10};
-	int rc;
-	
-}
-
-	double r[M];
-	double rnorm = 0.0;
-	for (int i = 0; i < M; ++i) {
-		r[i] = b[i];
-		for (int j = 0; j < N; ++j)
-			r[i] -= A[j][i] * x[j];
-		rnorm += r[i] * r[i];
-	}
 #endif
