@@ -1,5 +1,5 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
-module Bvls(
+module LinAlg.Bvls(
 	bvls
 ) where
 
@@ -15,9 +15,6 @@ foreign import ccall unsafe "bvls.h bvls"
 	c_bvls :: CInt -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble
 		-> Ptr CDouble -> Ptr CDouble -> IO CInt
 
-convert :: (Fractional b, Real a) => [a] -> [b]
-convert = map realToFrac
-
 bvls :: [[Double]] -> [Double] -> [Double] -> [Double] -> Maybe [Double] 
 bvls a b lb ub = unsafePerformIO $ do
 	x <- mallocArray n
@@ -29,13 +26,15 @@ bvls a b lb ub = unsafePerformIO $ do
 	let res = case rc of
 		0 -> do
 			tmp <- peekArray n x
-			return (Just $ convert tmp) 
+			return (Just $ convert' tmp) 
 		_ -> return Nothing
 	lift <- res
 	free x
 	return lift
 	where
 		pack2d = concat . transpose
+		convert = map realToFrac
+		convert' = map realToFrac
 		m' = fromIntegral $ length a
 		n = length $ head a
 		n' = fromIntegral n::CInt
